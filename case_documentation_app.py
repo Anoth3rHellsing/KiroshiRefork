@@ -39,6 +39,7 @@ from html import escape
 import textwrap
 import inspect
 import traceback
+import db_manager
 
 import pandas as pd
 import altair as alt
@@ -444,15 +445,15 @@ PERSISTENT_SETTINGS_DEFAULTS: dict[str, object] = {
 
 
 def _load_persistent_settings() -> dict[str, object]:
-    if not SETTINGS_FILE.exists():
-        return {}
     try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        logging.warning("Failed to load settings from %s: %s", SETTINGS_FILE, exc)
+        data = db_manager.load_settings(DATABASE_DIR)
+        if not data:
+            return {}
+    except Exception as exc:
+        logging.warning("Failed to load settings from db: %s", exc)
         return {}
     if not isinstance(data, dict):
-        logging.warning("Settings file %s did not contain a JSON object", SETTINGS_FILE)
+        logging.warning("Settings db did not contain a JSON object")
         return {}
     if "show_atom_chat" in data and "show_kiroshi_chat" not in data:
         data["show_kiroshi_chat"] = data.get("show_atom_chat")
@@ -1132,9 +1133,8 @@ def _persist_setting(key: str) -> None:
     value = st.session_state.get(key, PERSISTENT_SETTINGS_DEFAULTS[key])
     _persistent_settings_cache[key] = value
     try:
-        with SETTINGS_FILE.open("w", encoding="utf-8") as fh:
-            json.dump(_persistent_settings_cache, fh, indent=2, sort_keys=True)
-    except OSError as exc:
+        db_manager.save_settings(DATABASE_DIR, _persistent_settings_cache)
+    except Exception as exc:
         logging.warning("Failed to persist setting %s: %s", key, exc)
 
 
@@ -5343,13 +5343,12 @@ if st.session_state.autosave_notice:
 def load_autosave():
     if st.session_state._autosave_loaded:
         return
-    if os.path.exists(AUTOSAVE_FILE):
-        try:
-            with open(AUTOSAVE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+    try:
+        data = db_manager.load_autosave(DATABASE_DIR)
+        if data:
             st.session_state.case = data.get("case", {})
-        except Exception:
-            pass
+    except Exception:
+        pass
     st.session_state._autosave_loaded = True
 
 
@@ -6610,11 +6609,11 @@ def build_incident_report_pdf(
 
 
 def _load_case_tab_memory() -> list[dict[str, object]]:
-    if not CASE_TAB_MEMORY_FILE.exists():
-        return []
     try:
-        payload = json.loads(CASE_TAB_MEMORY_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = db_manager.load_memory(DATABASE_DIR, "case_tabs_memory.json")
+        if not payload:
+            return []
+    except Exception as exc:
         logging.warning("Failed to load case tab memory: %s", exc)
         return []
     tabs = payload.get("tabs") if isinstance(payload, Mapping) else None
@@ -6625,10 +6624,8 @@ def _load_case_tab_memory() -> list[dict[str, object]]:
 
 def _write_case_tab_memory(entries: list[dict[str, object]]) -> None:
     try:
-        CASE_TAB_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with CASE_TAB_MEMORY_FILE.open("w", encoding="utf-8") as fh:
-            json.dump({"tabs": entries}, fh, indent=2)
-    except OSError as exc:
+        db_manager.save_memory(DATABASE_DIR, "case_tabs_memory.json", {"tabs": entries})
+    except Exception as exc:
         logging.warning("Failed to persist case tab memory: %s", exc)
 
 
@@ -6643,13 +6640,13 @@ def _hydrate_case_sessions_from_memory() -> list[CaseSession]:
 
         if source_path:
             try:
-                raw = json.loads(Path(source_path).read_text(encoding="utf-8"))
-                if isinstance(raw, Mapping):
+                raw = db_manager.load_case(DATABASE_DIR, source_path)
+                if raw and isinstance(raw, Mapping):
                     case_payload = {
                         k: v for k, v in raw.items() if k in CaseData.__annotations__
                     }
                     attachments_index = _normalise_attachments_index(raw.get("attachments"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except Exception as exc:
                 logging.warning("Unable to refresh case %s from disk: %s", source_path, exc)
 
         if isinstance(case_payload, Mapping):
@@ -7042,8 +7039,7 @@ def autosave_payload() -> dict:
 
 
 def autosave():
-    with open(AUTOSAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(autosave_payload(), f, indent=2)
+    db_manager.save_autosave(DATABASE_DIR, autosave_payload())
     if st.session_state.get("autosave_to_database"):
         case_obj = st.session_state.get("case")
         case_cls = globals().get("CaseData")
@@ -7238,12 +7234,8 @@ def load_case_attachments(
 def create_case_autosave_snapshot(case_id: str) -> Path | None:
     try:
         payload = autosave_payload()
-        backup_path = Path(AUTOSAVE_FILE).with_name(
-            f"autosave_{sanitize_case_id(case_id)}.json"
-        )
-        with open(backup_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-        return backup_path
+        db_manager.save_case(DATABASE_DIR, f"autosave_{sanitize_case_id(case_id)}", payload)
+        return DATABASE_DIR / f"autosave_{sanitize_case_id(case_id)}.json"
     except Exception as exc:
         logging.exception("Failed to create autosave snapshot for %s", case_id)
         st.warning(f"Unable to create autosave backup: {exc}")
@@ -7252,7 +7244,9 @@ def create_case_autosave_snapshot(case_id: str) -> Path | None:
 
 def load_recent_cases() -> list:
     try:
-        payload = json.loads(RECENT_CASES_PATH.read_text(encoding="utf-8"))
+        payload = db_manager.load_recent_cases(DATABASE_DIR)
+        if not payload:
+            return []
     except Exception:
         return []
     if not isinstance(payload, list):
@@ -7277,10 +7271,11 @@ def update_recent_cases(case_id: str, path: str) -> None:
     try:
         case_path = Path(path)
         if case_path.exists():
-            data = json.loads(case_path.read_text(encoding="utf-8"))
-            mapping = _coerce_case_mapping(data)
-            if isinstance(mapping, Mapping):
-                last_modified = str(mapping.get("last_modified") or "")
+            data = db_manager.load_case(DATABASE_DIR, case_id)
+            if data:
+                mapping = _coerce_case_mapping(data)
+                if isinstance(mapping, Mapping):
+                    last_modified = str(mapping.get("last_modified") or "")
             if not last_modified:
                 last_modified = (
                     datetime.fromtimestamp(case_path.stat().st_mtime)
@@ -7290,7 +7285,7 @@ def update_recent_cases(case_id: str, path: str) -> None:
     except Exception:
         last_modified = ""
     recents.insert(0, {"case_id": case_id, "path": path, "last_modified": last_modified})
-    RECENT_CASES_PATH.write_text(json.dumps(recents[:10], indent=2), encoding="utf-8")
+    db_manager.save_recent_cases(DATABASE_DIR, recents[:10])
 
 
 def normalize_priority(value) -> str:
@@ -7376,19 +7371,21 @@ def _coerce_case_mapping(data: object) -> dict | None:
 
 def load_tracked_cases() -> list:
     cases = []
-    # Load modern tracked cases directly from the database directory.
-    for p in DATABASE_DIR.glob("*.json"):
-        try:
-            payload = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+
+    # Load modern tracked cases from SQLite
+    all_cases = db_manager.get_all_cases(DATABASE_DIR)
+    for payload in all_cases:
         data = _coerce_case_mapping(payload)
         if data is None:
             continue
         tracking_info = data.get("tracking")
         if not isinstance(tracking_info, dict) or not tracking_info.get("active"):
             continue
-        case_id = data.get("case_id") or p.stem
+
+        case_id = data.get("case_id", "")
+        if not case_id:
+            continue
+
         company = data.get("company_name") or data.get("company") or ""
         end_user = (
             data.get("contact_name")
@@ -7404,16 +7401,11 @@ def load_tracked_cases() -> list:
         )
         priority = normalize_priority(tracking_info.get("priority"))
         version = data.get("kiroshi_version")
-        last_modified = data.get("last_modified")
-        if not last_modified:
-            last_modified = (
-                datetime.fromtimestamp(p.stat().st_mtime)
-                .replace(microsecond=0)
-                .isoformat()
-            )
+        last_modified = data.get("last_modified") or ""
+
         cases.append(
             {
-                "path": str(p),
+                "path": case_id, # Re-purpose path to be case_id for lookup
                 "case_id": case_id,
                 "company": company,
                 "end_user": end_user,
@@ -7433,54 +7425,6 @@ def load_tracked_cases() -> list:
                 "last_modified": last_modified,
             }
         )
-    # Include historical tracked JSON files for reference.
-    for p in TRACKED_CASES_DIR.glob("*.json"):
-        try:
-            payload = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        data = _coerce_case_mapping(payload)
-        if data is None:
-            continue
-        case_id = data.get("case_id") or p.stem.replace("_Active", "")
-        company = data.get("company") or data.get("company_name") or ""
-        end_user = data.get("end_user") or data.get("customer") or ""
-        phone = data.get("phone_number") or ""
-        category = (
-            data.get("custom_category")
-            or data.get("service_tag")
-            or data.get("category")
-            or ""
-        )
-        last_modified = data.get("last_modified")
-        if not last_modified:
-            last_modified = (
-                datetime.fromtimestamp(p.stat().st_mtime)
-                .replace(microsecond=0)
-                .isoformat()
-            )
-        cases.append(
-            {
-                "path": str(p),
-                "case_id": case_id,
-                "company": company,
-                "end_user": end_user,
-                "phone_number": phone,
-                "type": data.get("type", ""),
-                "category": category,
-                "status": data.get("status", ""),
-                "priority": normalize_priority(data.get("priority")),
-                "ticket_number": data.get("ticket_number", ""),
-                "creation_day": data.get("creation_day", ""),
-                "expected_arrival_date": data.get("expected_arrival_date", ""),
-                "case_link": data.get("case_link", ""),
-                "service_tag": data.get("service_tag", ""),
-                "version_label": "Legacy JSON (this is only for display and not for case saving.)",
-                "kiroshi_version": None,
-                "is_legacy": True,
-                "last_modified": last_modified,
-            }
-        )
     return cases
 
 
@@ -7491,11 +7435,14 @@ def update_tracked_case_file(
     **updates,
 ) -> str | None:
     try:
-        case_path = Path(path)
-        payload = json.loads(case_path.read_text(encoding="utf-8"))
+        case_id = path
+        payload = db_manager.load_case(DATABASE_DIR, case_id)
+        if not payload:
+            raise ValueError(f"Case {case_id} not found in DB for tracking update")
+
         data = _coerce_case_mapping(payload)
         if data is None:
-            raise ValueError("Unsupported case file structure for tracking update")
+            raise ValueError("Unsupported case structure for tracking update")
         if tracking_updates:
             if isinstance(data.get("tracking"), dict):
                 tracking_data = data.get("tracking", {})
@@ -7508,19 +7455,8 @@ def update_tracked_case_file(
         timestamp = _utc_now_z()
         if isinstance(data, Mapping):
             data["last_modified"] = timestamp
-        if isinstance(payload, list):
-            replaced = False
-            for idx, item in enumerate(payload):
-                if isinstance(item, Mapping):
-                    payload[idx] = data
-                    replaced = True
-                    break
-            if not replaced:
-                payload.append(data)
-            to_write = payload
-        else:
-            to_write = data
-        case_path.write_text(json.dumps(to_write, indent=2), encoding="utf-8")
+
+        db_manager.save_case(DATABASE_DIR, case_id, data)
         return timestamp
     except Exception as exc:
         logging.exception("Failed to update tracked case %s", path)
@@ -7545,8 +7481,9 @@ def _apply_tracked_priority_update(
     target_case_id = case_id
     if target_case_id is None:
         try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            target_case_id = data.get("case_id")
+            data = db_manager.load_case(DATABASE_DIR, path)
+            if data:
+                target_case_id = data.get("case_id")
         except Exception:
             target_case_id = None
     if target_case_id and D.case_id == target_case_id:
@@ -7609,32 +7546,29 @@ def update_tracked_status(
 def untrack_case(path: str, *, case_id: str | None = None, is_legacy: bool | None = None) -> None:
     """Deactivate tracking for a case and refresh the dashboard."""
 
-    case_path = Path(path)
-    legacy_source = (
-        is_legacy
-        if is_legacy is not None
-        else case_path.parent == TRACKED_CASES_DIR or case_path.name.endswith("_Active.json")
-    )
+    legacy_source = bool(is_legacy)
     try:
-        data = json.loads(case_path.read_text(encoding="utf-8"))
+        data = db_manager.load_case(DATABASE_DIR, path)
+        if not data:
+            raise ValueError(f"Case {path} not found in DB")
     except Exception as exc:
         logging.exception("Failed to read tracked case %s", path)
         st.error(f"Failed to untrack case: {exc}")
         return
 
-    if not legacy_source and isinstance(data.get("tracking"), dict):
+    if isinstance(data.get("tracking"), dict):
         tracking = data.get("tracking", {})
         tracking["active"] = False
         data["tracking"] = tracking
-        target_case_id = case_id or data.get("case_id") or case_path.stem
+        target_case_id = case_id or data.get("case_id") or path
         try:
-            case_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            db_manager.save_case(DATABASE_DIR, target_case_id, data)
         except Exception as exc:
             logging.exception("Failed to persist updated case %s", path)
             st.error(f"Failed to update case: {exc}")
             return
         if target_case_id:
-            update_recent_cases(target_case_id, str(case_path))
+            update_recent_cases(target_case_id, target_case_id)
         if D.case_id == target_case_id:
             D.tracking.active = False
             st.session_state.track_case = False
@@ -7645,28 +7579,19 @@ def untrack_case(path: str, *, case_id: str | None = None, is_legacy: bool | Non
         return
 
     try:
-        case_id_value = case_id or data.get("case_id") or case_path.stem.replace("_Active", "")
+        case_id_value = case_id or data.get("case_id") or path
         if not case_id_value:
-            case_path.unlink(missing_ok=True)
             return
-        dest = DATABASE_DIR / f"{case_id_value}.json"
         payload = {k: v for k, v in data.items() if k != "path"}
 
-        if dest.exists():
-            try:
-                existing = json.loads(dest.read_text(encoding="utf-8"))
-            except Exception:
-                existing = {}
-            if isinstance(existing, dict):
-                existing.update(payload)
-                dest.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            else:
-                dest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        existing = db_manager.load_case(DATABASE_DIR, case_id_value)
+        if existing and isinstance(existing, dict):
+            existing.update(payload)
+            db_manager.save_case(DATABASE_DIR, case_id_value, existing)
         else:
-            dest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            db_manager.save_case(DATABASE_DIR, case_id_value, payload)
 
-        case_path.unlink(missing_ok=True)
-        update_recent_cases(case_id_value, str(dest))
+        update_recent_cases(case_id_value, case_id_value)
         st.toast("Case removed from tracking.") if hasattr(st, "toast") else st.success(
             "Case removed from tracking."
         )
@@ -7711,28 +7636,30 @@ def format_last_modified(value) -> str:
 
 def list_saved_cases() -> list:
     entries: list[dict[str, object]] = []
-    files = sorted(
-        DATABASE_DIR.glob("*.json"),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for path in files:
-        try:
-            raw_payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
+    all_cases = db_manager.get_all_cases(DATABASE_DIR)
 
+    # Sort all cases by updated timestamp, although our SQLite table has updated_at,
+    # let's try to extract last_modified if present for consistent sorting.
+    def _sort_key(payload):
+        m = _coerce_case_mapping(payload) or {}
+        return m.get("last_modified", "")
+
+    sorted_cases = sorted(all_cases, key=_sort_key, reverse=True)
+
+    for raw_payload in sorted_cases:
         is_legacy_payload = isinstance(raw_payload, list)
         data = _coerce_case_mapping(raw_payload)
         if data is None:
             data = {}
             is_legacy_payload = True
 
-        case_id = path.stem
+        case_id = data.get("case_id", "")
+        if not case_id:
+            continue
+
         company = ""
         end_user = ""
         if isinstance(data, Mapping):
-            case_id = data.get("case_id") or case_id
             company = (
                 data.get("company_name")
                 or data.get("company")
@@ -7749,7 +7676,7 @@ def list_saved_cases() -> list:
         raw_last_modified = data.get("last_modified") if isinstance(data, Mapping) else None
         parsed_last_modified = parse_iso_datetime(raw_last_modified)
         if parsed_last_modified is None:
-            parsed_last_modified = datetime.fromtimestamp(path.stat().st_mtime)
+            parsed_last_modified = datetime.now()
             raw_last_modified = parsed_last_modified.isoformat()
 
         has_tracking = isinstance(data, Mapping) and isinstance(data.get("tracking"), Mapping)
@@ -7778,8 +7705,8 @@ def list_saved_cases() -> list:
                 "end_user": end_user,
                 "updated": parsed_last_modified,
                 "last_modified": raw_last_modified,
-                "path": str(path),
-                "file_name": path.name,
+                "path": case_id, # Re-purpose path
+                "file_name": case_id,
                 "is_legacy": is_legacy_payload,
                 "kiroshi_version": kiroshi_version,
                 "tags": tags,
@@ -10045,19 +9972,13 @@ def _saved_case_files_signature() -> tuple[tuple[str, float], ...]:
 
 
 def iter_saved_case_records() -> Iterable[tuple[Path, Mapping[str, object]]]:
-    for path in DATABASE_DIR.glob("*.json"):
-        if path.name.lower() in {"recent_cases.json", AI_LEARNING_FILE.name.lower()}:
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                payload = json.load(fh)
-        except Exception as exc:
-            logging.warning("Failed to load saved case %s: %s", path, exc)
-            continue
+    for payload in db_manager.get_all_cases(DATABASE_DIR):
         if not isinstance(payload, Mapping):
-            logging.debug("Ignoring non-mapping payload for %s", path)
             continue
-        yield path, payload
+        case_id = payload.get("case_id")
+        if not case_id:
+            continue
+        yield Path(case_id), payload
 
 
 def _create_ai_learning_dataset_from_cases(
@@ -10202,11 +10123,10 @@ def _create_ai_learning_dataset_from_cases(
 
 
 def load_ai_learning_dataset() -> dict[str, object] | None:
-    if not AI_LEARNING_FILE.exists():
-        return None
     try:
-        with AI_LEARNING_FILE.open("r", encoding="utf-8") as fh:
-            payload = json.load(fh)
+        payload = db_manager.load_ai_learning(DATABASE_DIR)
+        if not payload:
+            return None
     except Exception as exc:
         logging.error("Failed to load AI learning dataset: %s", exc)
         return None
@@ -10353,8 +10273,7 @@ def build_ai_learning_dataset(
 
 def save_ai_learning_dataset(dataset: Mapping[str, object]) -> None:
     try:
-        with AI_LEARNING_FILE.open("w", encoding="utf-8") as fh:
-            json.dump(dataset, fh, indent=2)
+        db_manager.save_ai_learning(DATABASE_DIR, dict(dataset))
     except Exception as exc:
         logging.error("Failed to write AI learning dataset: %s", exc)
 
@@ -11636,14 +11555,14 @@ def save_case_to_database(
         case.kiroshi_version = VERSION
     else:
         case.kiroshi_version = str(case.kiroshi_version)
-    file_path = DATABASE_DIR / f"{case.case_id}.json"
     last_modified_value = case.last_modified
-    if (not last_modified_value) and file_path.exists():
+    if not last_modified_value:
         try:
-            existing_payload = json.loads(file_path.read_text(encoding="utf-8"))
-            existing_data = _coerce_case_mapping(existing_payload)
-            if isinstance(existing_data, Mapping):
-                last_modified_value = str(existing_data.get("last_modified") or "")
+            existing_payload = db_manager.load_case(DATABASE_DIR, case.case_id)
+            if existing_payload:
+                existing_data = _coerce_case_mapping(existing_payload)
+                if isinstance(existing_data, Mapping):
+                    last_modified_value = str(existing_data.get("last_modified") or "")
         except Exception:
             last_modified_value = ""
     if touch_last_modified or not last_modified_value:
@@ -11651,15 +11570,15 @@ def save_case_to_database(
     case.last_modified = str(last_modified_value)
     case_payload = asdict(case)
     case_payload["attachments"] = persist_case_attachments(case.case_id)
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(case_payload, f, indent=2)
+
+    db_manager.save_case(DATABASE_DIR, case.case_id, case_payload)
     if update_history:
-        update_recent_cases(case.case_id, str(file_path))
+        update_recent_cases(case.case_id, case.case_id)
     if notify:
-        st.success(f"Case saved to {file_path}")
+        st.success(f"Case saved to DB: {case.case_id}")
     st.session_state.ai_learning_signature = None
     st.session_state.ai_learning_data = None
-    return file_path
+    return DATABASE_DIR / f"{case.case_id}.json"  # Dummy path for callers expecting a path
 
 
 def _apply_case_payload(
@@ -11747,7 +11666,10 @@ def _apply_case_payload(
 def load_case_from_path(path: str) -> None:
     try:
         with loading_indicator():
-            raw_data = json.loads(Path(path).read_text(encoding="utf-8"))
+            # In the DB model, path is the case_id
+            raw_data = db_manager.load_case(DATABASE_DIR, path)
+            if not raw_data:
+                raise ValueError(f"Case {path} not found in DB")
             attachments_data: Mapping[str, Iterable[Mapping[str, object]]] | Mapping[str, object] | None = {}
             if isinstance(raw_data, Mapping):
                 attachments_data = raw_data.get("attachments")
