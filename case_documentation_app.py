@@ -5084,13 +5084,18 @@ def render_onboarding_tutorial() -> None:
                 furthest_idx = step_idx
             max_allowed = max(step_idx, furthest_idx)
             slider_options = list(range(max_allowed + 1))
-            jump_selection = st.select_slider(
-                "Navigate to a step",
-                options=slider_options,
-                value=step_idx,
-                format_func=_format_step_label,
-                key="tutorial_step_selector",
-            )
+
+            if len(slider_options) > 1:
+                jump_selection = st.select_slider(
+                    "Navigate to a step",
+                    options=slider_options,
+                    value=step_idx,
+                    format_func=_format_step_label,
+                    key="tutorial_step_selector",
+                )
+            else:
+                jump_selection = step_idx
+
             if len(slider_options) < total_steps:
                 st.caption(
                     "Complete the current content to unlock the remaining tutorial steps."
