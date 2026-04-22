@@ -369,6 +369,9 @@ def _initialize_storage_paths() -> None:
     TRACKED_CASES_DIR.mkdir(parents=True, exist_ok=True)
     _ensure_case_attachments_root()
 
+    db_manager.init_db(DATABASE_DIR)
+    db_manager.migrate_legacy_json_files(DATABASE_DIR, TRACKED_CASES_DIR, APP_ROOT)
+
 APP_ROOT = Path(__file__).resolve().parent
 # The project repository was transferred from the ``KiroshiCorp`` GitHub
 # organisation to ``Anoth3rHellsing``.  The update checker still defaulted to
@@ -3216,9 +3219,12 @@ def _enable_altair_theme(theme: ThemePalette) -> None:
         },
     }
 
-    if "kiroshi-active" not in alt.themes.names():
-        alt.themes.register("kiroshi-active", lambda config=config: config)
-    alt.themes.enable("kiroshi-active")
+    if "kiroshi-active" not in alt.theme.names():
+        @alt.theme.register("kiroshi-active", enable=True)
+        def _kiroshi_theme():
+            return alt.theme.ThemeConfig(**config)
+    else:
+        alt.theme.enable("kiroshi-active")
 
 # ────────────────────────── UTILITIES ───────────────────────────
 
