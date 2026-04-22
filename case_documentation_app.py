@@ -137,6 +137,11 @@ def safe_modal(title: str, key: str | None = None):
 
 VERSION = "RC 141025"
 TODAY_STR = datetime.now().strftime("%d%m%Y")
+
+CATEGORIZER_SUMMARY_PATTERN = re.compile(
+    r"^(?:[-*]\s*)?(product|topic|subtopic|confidence|signals?|key signals?)\s*[:：]\s*(.+)$",
+    re.IGNORECASE,
+)
 AUTOSAVE_FILE = "autosave.json"
 DEFAULT_OPENAI_API_KEY = os.environ.get(
     "OPENAI_API_KEY",
@@ -13209,10 +13214,6 @@ def parse_categorizer_summary(text: str) -> dict[str, str]:
         return summary
 
     in_block = False
-    pattern = re.compile(
-        r"^(?:[-*]\s*)?(product|topic|subtopic|confidence|signals?|key signals?)\s*[:：]\s*(.+)$",
-        re.IGNORECASE,
-    )
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -13220,7 +13221,7 @@ def parse_categorizer_summary(text: str) -> dict[str, str]:
         if not in_block and line.lower().startswith("classification summary"):
             in_block = True
             continue
-        match = pattern.match(line)
+        match = CATEGORIZER_SUMMARY_PATTERN.match(line)
         if match:
             in_block = True
             key = match.group(1).lower()
