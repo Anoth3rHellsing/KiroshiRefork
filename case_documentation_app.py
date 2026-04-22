@@ -4523,7 +4523,7 @@ def render_logo():
         }}
 
         #kiroshi-header, #kiroshi-header * {{
-            font-family: var(--kiroshi-font-family) !important;
+            font-family: {STREAMLIT_FONT_STACK_CSS} !important;
             color: var(--kiroshi-text);
         }}
 
@@ -4630,7 +4630,7 @@ def render_logo():
         </div>
         <div id="kiroshi-header__companion">
             <div id="kiroshi-header__companion-card">
-                <div id="kiroshi-header__companion-title">Kiroshi Motivational Compannion</div>
+                <div id="kiroshi-header__companion-title">Kiroshi Motivational Companion</div>
                 <div id="kiroshi-header__companion-text">{kiroshi_message}</div>
             </div>
         </div>
