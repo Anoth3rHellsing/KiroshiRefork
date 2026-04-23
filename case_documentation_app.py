@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Kiroshi RC 141025 – IT Case Documentation Helper
+Kiroshi 1.7.4 – IT Case Documentation Helper
 Run:
     streamlit run case_documentation_app.py
 """
@@ -136,7 +136,7 @@ def safe_modal(title: str, key: str | None = None):
         st.markdown(f"### {title}")
         yield
 
-VERSION = "RC 141025"
+VERSION = "1.7.4"
 TODAY_STR = datetime.now().strftime("%d%m%Y")
 
 CATEGORIZER_SUMMARY_PATTERN = re.compile(

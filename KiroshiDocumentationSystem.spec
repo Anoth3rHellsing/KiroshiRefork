@@ -83,7 +83,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['run_app.py'],
+    ['run.kiroshi1-7-4.py'],
     pathex=[],
     binaries=binaries,
     datas=datas,
