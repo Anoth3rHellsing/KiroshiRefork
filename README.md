@@ -335,7 +335,7 @@ streamlit run case_documentation_app.py
 Alternatively, use the provided wrapper script:
 
 ```bash
-python run_app.py
+python run.kiroshi1-7-4.py
 ```
 
 This helper sets up the correct Streamlit arguments and is the entry point used when packaging the project into an executable.
@@ -405,7 +405,7 @@ pip install -r requirements-bored.txt
 ./build.sh
 ```
 
-The resulting binary will be placed in the `dist/` directory. The script bundles the `run_app.py` entry point so the executable
+The resulting binary will be placed in the `dist/` directory. The script bundles the `run.kiroshi1-7-4.py` entry point so the executable
 launches the Streamlit interface directly.
 
 ## Documentation
